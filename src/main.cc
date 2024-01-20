@@ -131,7 +131,7 @@ int main(int argc, char* argv[]) {
             std::cout << "<output path>\tPath to output picture, can be absolute or relative." << std::endl;
             std::cout << "\t\tOutput is always .png." << std::endl << std::endl;
             std::cout << "<number of pixels to remove>" << std::endl << std::endl;
-            std::cout << "<output path>\t*advanced setting*" << std::endl;
+            std::cout << "<number of seams>\t*advanced setting*" << std::endl;
             std::cout << "\t\tSpecifies the number of seams being calculated, trading accuracy for speed." << std::endl;
             std::cout << "\t\tValue 100 will be best for most cases." << std::endl;
             return 0;

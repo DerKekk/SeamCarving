@@ -40,7 +40,7 @@ unsigned int* convert_to_int(const unsigned char* img, int width, int height, in
 }
 
 //Takes image as unsigned int array and converts to unsigned char array
-unsigned char* convert_to_char(unsigned int* img, int width, int height, int targetChannels) {
+unsigned char* convert_to_char(const unsigned int* img, int width, int height, int targetChannels) {
     auto* ret = (unsigned char*) malloc(width*height*targetChannels*sizeof(unsigned char));
 
     for (int y = 0; y < height; y++) {
@@ -61,19 +61,9 @@ unsigned char* convert_to_char(unsigned int* img, int width, int height, int tar
     return ret;
 }
 
-void print_pixel_values(int x, int y, const unsigned char* img, const int width, const int channels) {
-    int position = compute_offset(x, y, width, channels);
-    std::cout << "Pixel at coordinates (" << x << ", " << y << ") has the RGBA values" << std::endl;
-    std::cout << "Red: " << static_cast<unsigned>(img[position]) << std::endl;
-    std::cout << "Green: " << static_cast<unsigned>(img[position+1]) << std::endl;
-    std::cout << "Blue: " << static_cast<unsigned>(img[position+2]) << std::endl;
-    std::cout << "Alpha: " << static_cast<unsigned>(img[position+3]) << std::endl;
-}
-
-
 //returns grayscale value of pixel at input coordinates x, y
-unsigned char get_grayscale_value(int x, int y, const unsigned int* img, const int width, const int channels, const int raw_width) {
-    int position = compute_offset(x, y, raw_width, channels);
+unsigned char get_grayscale_value(int x, int y, const unsigned int* img, int raw_width) {
+    int position = compute_offset(x, y, raw_width, 1);
     unsigned int value = img[position];
 
     int red = value % 256;
@@ -85,44 +75,76 @@ unsigned char get_grayscale_value(int x, int y, const unsigned int* img, const i
     return static_cast<unsigned char>(0.299 * red + 0.587 * green + 0.114 * blue);
 }
 
+//returns unsigned char array with grayscale pixel values from input int array
 unsigned char* grayscale(unsigned int* img, int width, int height, int raw_width) {
     auto* grayscale = (unsigned char*) malloc(width*height*sizeof(unsigned char));
 
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             int position = compute_offset(x, y, width, 1);
-            grayscale[position] = get_grayscale_value(x, y, img, width, 1, raw_width);
+            grayscale[position] = get_grayscale_value(x, y, img, raw_width);
         }
     }
 
     return grayscale;
 }
 
+unsigned short gradient_magnitude(int x, int y, const unsigned char* grayscale, int raw_width) {
+    unsigned char left_pixel_grayscale = grayscale[compute_offset(x-1, y, raw_width, 1)];
+    unsigned char right_pixel_grayscale = grayscale[compute_offset(x+1, y, raw_width, 1)];
+    unsigned char upper_pixel_grayscale = grayscale[compute_offset(x, y-1, raw_width, 1)];
+    unsigned char lower_pixel_grayscale = grayscale[compute_offset(x, y+1, raw_width, 1)];
+
+    unsigned char horizontal_gradient = std::abs(right_pixel_grayscale - left_pixel_grayscale);
+    unsigned char vertical_gradient = std::abs(upper_pixel_grayscale - lower_pixel_grayscale);
+
+    return horizontal_gradient + vertical_gradient;
+}
+
+//Takes image as one-channel unsigned char array in grayscale
 //returns vector describing the images energy map using a simple gradient function, with higher value meaning more significant pixel.
 //note: The resulting vector will consist of only one channel
-void generate_energy_map(std::vector<unsigned short>& energy, unsigned char* img, const int width, const int height, const int channels, const int raw_width) {
+void generate_energy_map(std::vector<unsigned short>& energy, unsigned char* grayscale, int width, int height, int raw_width) {
 
+    //Calculate gradient magnitude for all non-border pixels
     for (int y = 1; y < height-1; y++) {
         for (int x = 1; x < width-1; x++) {
-
-            unsigned char left_pixel_grayscale = img[compute_offset(x-1, y, raw_width, 1)];
-            unsigned char right_pixel_grayscale = img[compute_offset(x+1, y, raw_width, 1)];
-            unsigned char upper_pixel_grayscale = img[compute_offset(x, y-1, raw_width, 1)];
-            unsigned char lower_pixel_grayscale = img[compute_offset(x, y+1, raw_width, 1)];
-
-            unsigned char horizontal_gradient = std::abs(right_pixel_grayscale - left_pixel_grayscale);
-            unsigned char vertical_gradient = std::abs(upper_pixel_grayscale - lower_pixel_grayscale);
-
-            energy[compute_offset(x, y, width, 1)] = horizontal_gradient + vertical_gradient;
+            energy[compute_offset(x, y, width, 1)] = gradient_magnitude(x, y, grayscale, raw_width);
         }
     }
 
+    //Set borders to max_value
     for (int y = 0; y < height; y++) {
         energy[compute_offset(0, y, raw_width, 1)] = UINT16_MAX;
         energy[compute_offset(width-1, y, raw_width, 1)] = UINT16_MAX;
     }
 }
 
+//Take the same arguments as generate_energy_map as well as a seam.
+//Only recalculates energy for pixels affected by the removal of given seam
+void recalculate_energy_at_seam(std::vector<unsigned short>& energy, unsigned char* grayscale, const int width, const int height, const int raw_width, std::vector<int>& seam) {
+    for (int y = 1; y < height - 1; y++) {
+        int x = seam[y];
+        int left_pixel_position = compute_offset(x-1, y, raw_width, 1);
+        int shifted_pixel_position = compute_offset(x, y, raw_width, 1);
+
+        if (x > 1) {
+            energy[left_pixel_position] = gradient_magnitude(x-1, y, grayscale, raw_width);
+        }
+        else {
+            energy[left_pixel_position] = UINT16_MAX;
+        }
+
+        if (x < width - 1) {
+            energy[shifted_pixel_position] = gradient_magnitude(x, y, grayscale, raw_width);
+        }
+        else {
+            energy[shifted_pixel_position] = UINT16_MAX;
+        }
+    }
+}
+
+//Builds a seam by deciding on the lowest energy path through the image
 void build_seam(std::vector<int>& seam, std::vector<int>& seam_weights, const std::vector<unsigned short>& energy, int width, int height, const int raw_width) {
     int seamNo = seam[0];
 
@@ -149,7 +171,7 @@ void build_seam(std::vector<int>& seam, std::vector<int>& seam_weights, const st
     }
 }
 
-void generate_seams(std::vector<std::vector<int>>& seams, std::vector<int>& seam_weights, std::vector<unsigned short>& energy, int width, int height, int raw_width) {
+void generate_seams(std::vector<std::vector<int>>& seams, std::vector<int>& seam_weights, std::vector<unsigned short>& energy, int width, int height, int raw_width, int seam_count) {
 
     //Init vector and first row
     for (int x = 0; x < width; x++) {
@@ -159,12 +181,23 @@ void generate_seams(std::vector<std::vector<int>>& seams, std::vector<int>& seam
     }
     seam_weights.resize(width);
 
+    int seam_spacing = width/seam_count;
+    if (seam_spacing < 1) {
+        seam_spacing = 1;
+    }
+
     for (int x = 0; x < width; x++) {
-        build_seam(seams[x], seam_weights, energy, width, height, raw_width);
+        if (x % seam_spacing == 0) {
+            build_seam(seams[x], seam_weights, energy, width, height, raw_width);
+        }
+        else {
+            seam_weights[x] = INT32_MAX;
+        }
     }
 }
 
-void remove_seam(unsigned int* img, std::vector<std::vector<int>>& seams, const std::vector<int>& seamWeights, std::vector<unsigned short>& energy, int& width, int& height, const int raw_width) {
+//Removes seam with the least importance and recalculates energy map at affected pixels
+void remove_seam(unsigned int* img, std::vector<std::vector<int>>& seams, const std::vector<int>& seamWeights, std::vector<unsigned short>& energy, int& width, int& height, const int raw_width, unsigned char* grayscale) {
     int index = std::distance(
             std::begin(seamWeights), std::min_element(std::begin(seamWeights), std::end(seamWeights)));
 
@@ -173,10 +206,13 @@ void remove_seam(unsigned int* img, std::vector<std::vector<int>>& seams, const 
             int position = compute_offset(x, y, raw_width, 1);
             img[position] = img[position+1];
             energy[position] = energy[position+1];
+            grayscale[position] = grayscale[position+1];
         }
     }
     width--;
     std::cout << "Removed seam no. " << index << ", new width: " << width << std::endl;
+
+    recalculate_energy_at_seam(energy, grayscale, width, height, raw_width, seams[index]);
 }
 
 unsigned int* postprocess (unsigned int* img, int width, int height, int raw_width) {
